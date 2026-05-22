@@ -66,6 +66,7 @@ import app.gyrolet.mpvrx.preferences.VideoSortType
 import app.gyrolet.mpvrx.ui.player.controls.PlayerControls
 import app.gyrolet.mpvrx.ui.theme.MpvrxTheme
 import app.gyrolet.mpvrx.utils.history.RecentlyPlayedOps
+import app.gyrolet.mpvrx.ui.player.curl.CurlBridge
 import app.gyrolet.mpvrx.utils.media.HttpUtils
 import app.gyrolet.mpvrx.utils.media.listTreeFilesSafely
 import app.gyrolet.mpvrx.utils.media.openPersistedTreeDocument
@@ -135,6 +136,8 @@ class PlayerActivity :
    * Observer for MPV events.
    */
   private val playerObserver by lazy { PlayerObserver(this) }
+
+  private val curlBridge by lazy { CurlBridge(lifecycleScope) }
 
   // ==================== Dependency Injection ====================
 
@@ -1206,6 +1209,7 @@ class PlayerActivity :
       syncBundledAssetsIfNeeded()
       syncFromUserMpvDirectory(syncSubtitleFontsFolder = false)
       sanitizeInternalFontsDirectory()
+      copyBundledCurlScripts()
       Log.d(TAG, "MPV config and scripts prepared successfully")
     }.onFailure { e ->
       Log.e(TAG, "Error copying MPV config and scripts", e)
@@ -1264,6 +1268,7 @@ class PlayerActivity :
     if (tree != null) {
       Log.d(TAG, "Syncing from user MPV directory: ${tree.uri}")
       syncConfigFiles(tree)
+      syncJavascriptInit(tree)
       syncScripts(tree)
       syncScriptOpts(tree)
       syncShaders(tree)
@@ -1316,6 +1321,22 @@ class PlayerActivity :
       }.onFailure { e ->
         Log.e(TAG, "Error syncing config: $configName", e)
       }
+    }
+  }
+
+  private fun syncJavascriptInit(tree: DocumentFile) {
+    runCatching {
+      val initFile = findFileCaseInsensitive(tree, JAVASCRIPT_INIT_FILE)
+      val target = File(filesDir, JAVASCRIPT_INIT_FILE)
+      val userContent =
+        if (initFile != null && initFile.exists() && initFile.canRead()) {
+          contentResolver.openInputStream(initFile.uri)?.bufferedReader()?.use { it.readText() }.orEmpty()
+        } else {
+          ""
+        }
+      writeTextFileIfChanged(target, userContent)
+    }.onFailure { error ->
+      Log.e(TAG, "Error syncing $JAVASCRIPT_INIT_FILE", error)
     }
   }
 
@@ -1588,7 +1609,7 @@ class PlayerActivity :
   }
 
   /**
-   * Loads a specific Lua script at runtime without restarting the player.
+   * Loads a specific Lua/JS script at runtime without restarting the player.
    * Finds the script in the user's MPV directory, copies it to internal storage,
    * and commands MPV to load it.
    */
@@ -1676,6 +1697,58 @@ class PlayerActivity :
     fontsDir.listFiles()?.filter { it.isDirectory }?.forEach { nestedDir ->
       nestedDir.deleteRecursively()
     }
+  }
+
+  private fun copyBundledCurlScripts() {
+    val scriptsDir = File(filesDir, "scripts")
+    scriptsDir.mkdirs()
+
+    copyBundledCurlAsset(
+      scriptName = LUA_CURL_HELPER,
+      target = File(scriptsDir, LUA_CURL_HELPER),
+    )
+
+    File(scriptsDir, JS_CURL_HELPER).delete()
+
+    val jsModulesDir = File(scriptsDir, "modules.js")
+    jsModulesDir.mkdirs()
+    copyBundledCurlAsset(
+      scriptName = JS_CURL_HELPER,
+      target = File(jsModulesDir, JS_CURL_HELPER),
+    )
+    writeJavascriptInitForCurlModules()
+  }
+
+  private fun copyBundledCurlAsset(
+    scriptName: String,
+    target: File,
+  ) {
+    try {
+      target.parentFile?.mkdirs()
+      assets.open("$CURL_ASSET_DIR/$scriptName").use { input ->
+        target.outputStream().use { output -> input.copyTo(output) }
+      }
+      Log.d(TAG, "Copied bundled curl helper: ${target.absolutePath}")
+    } catch (e: Exception) {
+      Log.e(TAG, "Error copying bundled curl helper $scriptName", e)
+    }
+  }
+
+  private fun writeJavascriptInitForCurlModules() {
+    val initFile = File(filesDir, JAVASCRIPT_INIT_FILE)
+    val existing = runCatching { initFile.takeIf { it.exists() }?.readText().orEmpty() }.getOrDefault("")
+    val withoutOldBlock = existing.replace(JS_MODULE_INIT_BLOCK_REGEX, "").trimEnd()
+    val nextContent =
+      buildString {
+        if (withoutOldBlock.isNotBlank()) {
+          append(withoutOldBlock)
+          appendLine()
+          appendLine()
+        }
+        append(JS_MODULE_INIT_BLOCK)
+      }
+
+    writeTextFileIfChanged(initFile, nextContent)
   }
 
   /**
@@ -2270,6 +2343,12 @@ class PlayerActivity :
     property: String,
     value: String,
   ) {
+    if (property == "user-data/mpvrx/curl/request") {
+      val data = value.ifBlank { return }
+      curlBridge.handleRequest(data)
+      MPVLib.setPropertyString(property, "")
+      return
+    }
     when (property.substringBeforeLast("/")) {
       "user-data/mpvrx" -> viewModel.handleLuaInvocation(property, value)
     }
@@ -4335,6 +4414,29 @@ class PlayerActivity :
 
 
   companion object {
+    private const val CURL_ASSET_DIR = "mpvrx_curl"
+    private const val LUA_CURL_HELPER = "mpvrx_curl.lua"
+    private const val JS_CURL_HELPER = "mpvrx_curl.js"
+    private const val JAVASCRIPT_INIT_FILE = "init.js"
+    private val JS_MODULE_INIT_BLOCK_REGEX =
+      Regex(
+        "/\\* mpvRx curl module path: start \\*/[\\s\\S]*?/\\* mpvRx curl module path: end \\*/\\s*",
+      )
+    private val JS_MODULE_INIT_BLOCK =
+      """
+      /* mpvRx curl module path: start */
+      (function() {
+        var modulePath = "~~/scripts/modules.js/";
+        for (var i = 0; i < mp.module_paths.length; i++) {
+          if (mp.module_paths[i] === modulePath) {
+            return;
+          }
+        }
+        mp.module_paths.push(modulePath);
+      }());
+      /* mpvRx curl module path: end */
+      """.trimIndent()
+
     /**
      * Intent action used to return playback result data to the calling activity.
      */
