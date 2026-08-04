@@ -99,4 +99,5 @@ val domainModule =
       app.gyrolet.mpvrx.domain.syncplay
         .SyncplayManager(androidContext())
     }
+    single { app.gyrolet.mpvrx.domain.torrent.TorrentStreamingEngine(androidContext()) }
   }

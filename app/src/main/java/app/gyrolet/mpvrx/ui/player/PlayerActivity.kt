@@ -173,6 +173,7 @@ class PlayerActivity :
    * Observer for MPV events.
    */
   private val playerObserver by lazy { PlayerObserver(this) }
+  private val torrentStreamingEngine: app.gyrolet.mpvrx.domain.torrent.TorrentStreamingEngine by inject()
 
   /**
    * True when the current playback session was launched from the Secure Folder. Files hidden
@@ -1117,6 +1118,7 @@ class PlayerActivity :
       }
       cleanupReceivers()
       releaseMediaSession()
+      torrentStreamingEngine.stopStream()
     }.onFailure { e ->
       Log.e(TAG, "Error during onDestroy", e)
     }
@@ -4115,11 +4117,21 @@ class PlayerActivity :
             return@launch
           }
 
+          val targetUri = originalUri ?: playableUri
+          val uriToLoad = if (isTorrentSource(targetUri) || isTorrentSource(playableUri)) {
+            val torrentReq = app.gyrolet.mpvrx.domain.torrent.TorrentStreamRequest(
+              infoHashOrMagnet = targetUri
+            )
+            torrentStreamingEngine.startStream(torrentReq)
+          } else {
+            playableUri
+          }
+
           withContext(Dispatchers.Main) { requestAudioFocus() }
           // Tear down the outgoing video track before replacing the file.
           restoreVideoTrackAfterFileLoad = !disableVideoOnFallback
           MPVLib.setPropertyString("vid", "no")
-          MPVLib.command("loadfile", playableUri, "replace", "-1", "pause=no")
+          MPVLib.command("loadfile", uriToLoad, "replace", "-1", "pause=no")
           MPVLib.setPropertyBoolean("pause", false)
         } catch (error: CancellationException) {
           throw error
@@ -4131,6 +4143,14 @@ class PlayerActivity :
           viewModel.showToast(getString(R.string.toast_playback_load_failed))
         }
       }
+  }
+
+  private fun isTorrentSource(uri: String): Boolean {
+    val u = uri.trim().lowercase()
+    return u.startsWith("magnet:") ||
+      u.startsWith("torrent://") ||
+      u.endsWith(".torrent") ||
+      app.gyrolet.mpvrx.domain.torrent.canonicalInfoHash(uri) != null
   }
 
   // ==================== Picture-in-Picture Management ====================

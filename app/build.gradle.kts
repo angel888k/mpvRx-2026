@@ -254,6 +254,11 @@ dependencies {
   implementation(libs.lazycolumnscrollbar)
   implementation(libs.reorderable)
   implementation(libs.androidx.biometric)
+  implementation(libs.libtorrent4j)
+  implementation(libs.libtorrent4j.android.arm64)
+  implementation(libs.libtorrent4j.android.arm)
+  implementation(libs.libtorrent4j.android.x86)
+  implementation(libs.libtorrent4j.android.x8664)
 }
 
 // ---------------- Git helpers ----------------

@@ -305,7 +305,15 @@ fun PlayerControls(
     val speedPresets by playerPreferences.speedPresets.collectAsState()
     val sortedSpeedPresets = remember(speedPresets) { speedPresets.map { it.toFloat() }.sorted() }
 
+    val torrentEngine = org.koin.compose.koinInject<app.gyrolet.mpvrx.domain.torrent.TorrentStreamingEngine>()
+    val torrentState by torrentEngine.state.collectAsState()
+
     Box(modifier = modifier.fillMaxSize()) {
+      app.gyrolet.mpvrx.ui.player.controls.components.TorrentStatusOverlay(
+        state = torrentState,
+        modifier = Modifier.align(androidx.compose.ui.Alignment.TopCenter),
+      )
+
       AudioPlayerControls(
         viewModel = viewModel,
         mediaTitle = mediaTitle,
