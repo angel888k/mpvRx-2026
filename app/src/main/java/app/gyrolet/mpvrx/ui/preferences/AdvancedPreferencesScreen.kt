@@ -562,6 +562,28 @@ object AdvancedPreferencesScreen : Screen {
 
           // Scripts Section
           item {
+            PreferenceSectionHeader(title = "P2P Streaming")
+          }
+
+          item {
+            PreferenceCard {
+              val enableP2pStreaming by preferences.enableP2pStreaming.collectAsState()
+
+              SwitchPreference(
+                value = enableP2pStreaming,
+                onValueChange = preferences.enableP2pStreaming::set,
+                title = { Text("Enable P2P Torrent Streaming") },
+                summary = {
+                  Text(
+                    "Stream video directly from peer-to-peer torrent and magnet links",
+                    color = MaterialTheme.colorScheme.outline,
+                  )
+                },
+              )
+            }
+          }
+
+          item {
             PreferenceSectionHeader(title = stringResource(R.string.pref_section_scripts))
           }
 

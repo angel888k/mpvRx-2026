@@ -3,7 +3,6 @@ package app.gyrolet.mpvrx.ui.player.controls.components
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,13 +14,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.Group
-import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -38,10 +31,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import app.gyrolet.mpvrx.domain.torrent.TorrentStreamingState
 import app.gyrolet.mpvrx.domain.torrent.formatTorrentBytes
 import app.gyrolet.mpvrx.domain.torrent.formatTorrentSpeed
+import app.gyrolet.mpvrx.ui.icons.Icon
+import app.gyrolet.mpvrx.ui.icons.Icons
 
 @Composable
 fun TorrentStatusOverlay(
@@ -114,7 +108,7 @@ fun TorrentStatusOverlay(
                   modifier = Modifier.size(24.dp),
                 ) {
                   Icon(
-                    imageVector = Icons.Default.Close,
+                    imageVector = Icons.RoundedFilled.Close,
                     contentDescription = "Hide",
                     tint = Color.White.copy(alpha = 0.7f),
                   )
@@ -127,7 +121,7 @@ fun TorrentStatusOverlay(
               ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                   Icon(
-                    imageVector = Icons.Default.Download,
+                    imageVector = Icons.RoundedFilled.Download,
                     contentDescription = null,
                     tint = Color(0xFF4CAF50),
                     modifier = Modifier.size(16.dp),
@@ -143,7 +137,7 @@ fun TorrentStatusOverlay(
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
                   Icon(
-                    imageVector = Icons.Default.Upload,
+                    imageVector = Icons.RoundedFilled.Upload,
                     contentDescription = null,
                     tint = Color(0xFF2196F3),
                     modifier = Modifier.size(16.dp),
@@ -158,7 +152,7 @@ fun TorrentStatusOverlay(
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
                   Icon(
-                    imageVector = Icons.Default.Group,
+                    imageVector = Icons.RoundedFilled.Group,
                     contentDescription = null,
                     tint = Color(0xFFFFC107),
                     modifier = Modifier.size(16.dp),
@@ -218,7 +212,7 @@ fun TorrentStatusOverlay(
             }
           }
 
-          else -> {}
+          is TorrentStreamingState.Idle -> {}
         }
       }
     }

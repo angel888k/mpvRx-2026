@@ -10,6 +10,7 @@ import java.io.InputStream
 
 class TorrentProxyServer(
   private val getActiveTorrent: () -> Pair<TorrentHandle, File>?,
+  private val onActivity: () -> Unit = {},
 ) : NanoHTTPD("127.0.0.1", 0) {
 
   private val TAG = "TorrentProxyServer"
@@ -18,6 +19,8 @@ class TorrentProxyServer(
     get() = "http://127.0.0.1:$listeningPort/stream"
 
   override fun serve(session: IHTTPSession): Response {
+    onActivity()
+
     val uri = session.uri
     if (!uri.startsWith("/stream")) {
       return newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "404 Not Found")
@@ -80,7 +83,7 @@ class TorrentProxyServer(
 
     prioritizeRange(handle, start, contentLength)
 
-    val inputStream = TorrentStreamInputStream(file, start, contentLength, handle)
+    val inputStream = TorrentStreamInputStream(file, start, contentLength, handle, onActivity)
 
     val responseStatus = if (rangeHeader != null) Response.Status.PARTIAL_CONTENT else Response.Status.OK
     val response = newChunkedResponse(responseStatus, mimeType, inputStream)
@@ -132,6 +135,7 @@ class TorrentProxyServer(
     private val startOffset: Long,
     private val length: Long,
     private val handle: TorrentHandle,
+    private val onActivity: () -> Unit,
   ) : InputStream() {
     private var fileStream: FileInputStream? = null
     private var bytesReadTotal = 0L
@@ -161,6 +165,7 @@ class TorrentProxyServer(
       val read = fis.read(b, off, toRead)
       if (read > 0) {
         bytesReadTotal += read
+        onActivity()
       }
       return read
     }
@@ -170,6 +175,7 @@ class TorrentProxyServer(
       val startMs = System.currentTimeMillis()
       while (file.length() < targetOffset && (System.currentTimeMillis() - startMs) < timeoutMs) {
         if (!handle.isValid) break
+        onActivity()
         try {
           Thread.sleep(50)
         } catch (_: InterruptedException) {

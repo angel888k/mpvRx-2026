@@ -4119,6 +4119,13 @@ class PlayerActivity :
 
           val targetUri = originalUri ?: playableUri
           val uriToLoad = if (isTorrentSource(targetUri) || isTorrentSource(playableUri)) {
+            if (!advancedPreferences.enableP2pStreaming.get()) {
+              withContext(Dispatchers.Main) {
+                viewModel.showToast("Enable P2P Torrent Streaming in Settings to play torrents")
+                viewModel.onVideoLoadCompleted()
+              }
+              return@launch
+            }
             val torrentReq = app.gyrolet.mpvrx.domain.torrent.TorrentStreamRequest(
               infoHashOrMagnet = targetUri
             )

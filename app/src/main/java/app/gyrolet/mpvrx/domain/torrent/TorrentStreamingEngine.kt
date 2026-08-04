@@ -15,11 +15,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.libtorrent4j.Priority
 import org.libtorrent4j.SessionManager
+import org.libtorrent4j.Sha1Hash
+import org.libtorrent4j.TorrentFlags
 import org.libtorrent4j.TorrentHandle
 import org.libtorrent4j.TorrentInfo
-import org.libtorrent4j.swig.settings_pack
 import java.io.File
-import java.util.concurrent.atomic.AtomicBoolean
 
 class TorrentStreamingEngine(
   private val context: Context,
@@ -36,6 +36,11 @@ class TorrentStreamingEngine(
   private var proxyServer: TorrentProxyServer? = null
   private var statsJob: Job? = null
 
+  @Volatile
+  private var lastActivityTimeMs: Long = System.currentTimeMillis()
+
+  private val INACTIVITY_TIMEOUT_MS = 60_000L // Auto-stop after 60s of inactivity
+
   @Synchronized
   private fun ensureSessionStarted() {
     if (sessionManager != null) return
@@ -46,21 +51,16 @@ class TorrentStreamingEngine(
     val sm = SessionManager()
     sm.start()
 
-    val settings = sm.settingsPack()
-    settings.setInteger(settings_pack.int_types.active_downloads.swigValue(), 10)
-    settings.setInteger(settings_pack.int_types.active_seeds.swigValue(), 5)
-    settings.setInteger(settings_pack.int_types.active_limit.swigValue(), 15)
-    settings.setBoolean(settings_pack.bool_types.enable_dht.swigValue(), true)
-    settings.setBoolean(settings_pack.bool_types.enable_lsd.swigValue(), true)
-    settings.setBoolean(settings_pack.bool_types.enable_upnp.swigValue(), true)
-    settings.setBoolean(settings_pack.bool_types.enable_natpmp.swigValue(), true)
-    sm.applySettings(settings)
-
     sessionManager = sm
+  }
+
+  fun notifyActivity() {
+    lastActivityTimeMs = System.currentTimeMillis()
   }
 
   suspend fun startStream(request: TorrentStreamRequest): String = withContext(Dispatchers.IO) {
     stopStream()
+    notifyActivity()
 
     _state.value = TorrentStreamingState.Connecting(phase = "Initializing Torrent Engine...")
     ensureSessionStarted()
@@ -69,18 +69,57 @@ class TorrentStreamingEngine(
     val cacheDir = File(context.cacheDir, "torrent_downloads")
     cacheDir.mkdirs()
 
-    val magnetUri = if (request.infoHashOrMagnet.startsWith("magnet:", ignoreCase = true)) {
-      request.infoHashOrMagnet
-    } else {
-      buildMagnetUri(request.infoHashOrMagnet, request.trackers)
-    }
+    val parsedMagnet = parseMagnet(request.infoHashOrMagnet)
+    val cleanMagnetUri = parsedMagnet?.cleanMagnetUri ?: request.infoHashOrMagnet
+    val requestedFileIdx = request.fileIdx ?: parsedMagnet?.fileIdx
 
     _state.value = TorrentStreamingState.Connecting(phase = "Connecting to P2P network & fetching metadata...")
 
-    val torrentData = sm.fetchMagnet(magnetUri, 30, cacheDir)
-      ?: throw IllegalStateException("Failed to fetch torrent metadata. Check magnet link or network connection.")
+    // Download / add torrent directly to libtorrent session
+    sm.download(cleanMagnetUri, cacheDir, null)
 
-    val torrentInfo = TorrentInfo(torrentData)
+    val infoHashHex = parsedMagnet?.infoHash ?: canonicalInfoHash(request.infoHashOrMagnet)
+    val sha1 = if (!infoHashHex.isNullOrBlank()) Sha1Hash.parseHex(infoHashHex) else null
+
+    var handle: TorrentHandle? = if (sha1 != null) sm.find(sha1) else null
+    val metadataTimeoutMs = 60_000L
+    val startTime = System.currentTimeMillis()
+
+    // Poll until metadata is acquired or timeout
+    while (handle == null || handle.torrentFile() == null) {
+      if (System.currentTimeMillis() - startTime > metadataTimeoutMs) {
+        throw IllegalStateException("Timed out fetching torrent metadata. Ensure active seeds are available.")
+      }
+      delay(400L)
+      if (handle == null && sha1 != null) {
+        handle = sm.find(sha1)
+      }
+      handle?.let { h ->
+        if (h.isValid) {
+          try {
+            val status = h.status()
+            val peers = status.numPeers()
+            val seeds = status.numSeeds()
+            val phaseMsg = if (seeds > 0 || peers > 0) {
+              "Downloading metadata ($seeds seeds, $peers peers)..."
+            } else {
+              "Searching P2P DHT & trackers for peers..."
+            }
+            _state.value = TorrentStreamingState.Connecting(
+              phase = phaseMsg,
+              peers = peers,
+              seeds = seeds,
+            )
+          } catch (e: Exception) {
+            Log.w(TAG, "Error checking status during metadata fetch", e)
+          }
+        }
+      }
+    }
+
+    val torrentInfo = handle.torrentFile()
+      ?: throw IllegalStateException("Failed to read torrent metadata.")
+
     val files = torrentInfo.files()
     val numFiles = files.numFiles()
 
@@ -88,19 +127,20 @@ class TorrentStreamingEngine(
       throw IllegalStateException("Torrent contains no files.")
     }
 
-    val fileIdx = request.fileIdx ?: findLargestVideoFile(torrentInfo)
+    val fileIdx = requestedFileIdx?.coerceIn(0, numFiles - 1) ?: findLargestVideoFile(torrentInfo)
     val filePath = files.filePath(fileIdx)
     val fileSize = files.fileSize(fileIdx)
     val targetFile = File(cacheDir, filePath)
 
     _state.value = TorrentStreamingState.Connecting(phase = "Starting stream for ${targetFile.name}...")
 
-    val handle = sm.download(torrentInfo, cacheDir)
-    handle.setSequentialDownload(true)
+    // Enable sequential downloading for streaming
+    handle.setFlags(TorrentFlags.SEQUENTIAL_DOWNLOAD)
 
+    // Set file priorities: ignore non-selected files, set selected file to TOP_PRIORITY
     val priorities = Array(numFiles) { Priority.IGNORE }
     priorities[fileIdx] = Priority.TOP_PRIORITY
-    handle.filePriorities(priorities)
+    handle.prioritizeFiles(priorities)
 
     prioritizeHeaderAndFooter(handle, torrentInfo, fileIdx)
 
@@ -108,11 +148,14 @@ class TorrentStreamingEngine(
     activeFile = targetFile
 
     if (proxyServer == null) {
-      proxyServer = TorrentProxyServer {
-        val h = activeHandle
-        val f = activeFile
-        if (h != null && f != null && h.isValid) h to f else null
-      }.apply {
+      proxyServer = TorrentProxyServer(
+        getActiveTorrent = {
+          val h = activeHandle
+          val f = activeFile
+          if (h != null && f != null && h.isValid) h to f else null
+        },
+        onActivity = { notifyActivity() },
+      ).apply {
         start()
       }
     }
@@ -195,6 +238,13 @@ class TorrentStreamingEngine(
     statsJob = scope.launch {
       while (isActive && handle.isValid) {
         try {
+          val inactiveMs = System.currentTimeMillis() - lastActivityTimeMs
+          if (inactiveMs > INACTIVITY_TIMEOUT_MS) {
+            Log.i(TAG, "Torrent stream inactive for ${inactiveMs / 1000}s. Auto-stopping engine.")
+            stopStream()
+            break
+          }
+
           val status = handle.status()
           val downloadSpeed = status.downloadPayloadRate().toLong()
           val uploadSpeed = status.uploadPayloadRate().toLong()

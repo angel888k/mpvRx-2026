@@ -15,6 +15,14 @@ data class TorrentFileItem(
   val size: Long,
 )
 
+data class ParsedMagnet(
+  val infoHash: String,
+  val cleanMagnetUri: String,
+  val fileIdx: Int?,
+  val displayName: String?,
+  val trackers: List<String>,
+)
+
 sealed class TorrentStreamingState {
   data object Idle : TorrentStreamingState()
 
@@ -74,12 +82,80 @@ fun canonicalInfoHash(raw: String): String? {
   return null
 }
 
-fun buildMagnetUri(infoHash: String, trackers: List<String> = emptyList()): String {
+fun parseMagnet(raw: String): ParsedMagnet? {
+  val trimmed = raw.trim()
+  val hash = canonicalInfoHash(trimmed) ?: return null
+
+  if (!trimmed.startsWith("magnet:", ignoreCase = true)) {
+    val clean = buildMagnetUri(hash)
+    return ParsedMagnet(
+      infoHash = hash,
+      cleanMagnetUri = clean,
+      fileIdx = null,
+      displayName = null,
+      trackers = DEFAULT_TORRENT_TRACKERS,
+    )
+  }
+
+  val queryIndex = trimmed.indexOf('?')
+  val queryString = if (queryIndex >= 0) trimmed.substring(queryIndex + 1) else ""
+
+  var fileIdx: Int? = null
+  var displayName: String? = null
+  val extractedTrackers = mutableListOf<String>()
+
+  if (queryString.isNotEmpty()) {
+    val pairs = queryString.split('&')
+    for (pair in pairs) {
+      val eqIndex = pair.indexOf('=')
+      if (eqIndex > 0) {
+        val key = pair.substring(0, eqIndex).lowercase()
+        val value = pair.substring(eqIndex + 1)
+        when (key) {
+          "index", "fileindex", "file_index", "fileidx", "so", "indices" -> {
+            fileIdx = value.toIntOrNull()
+          }
+          "dn" -> {
+            try {
+              displayName = java.net.URLDecoder.decode(value, "UTF-8")
+            } catch (_: Exception) {
+              displayName = value
+            }
+          }
+          "tr" -> {
+            try {
+              val decoded = java.net.URLDecoder.decode(value, "UTF-8")
+              if (decoded.isNotBlank()) extractedTrackers.add(decoded)
+            } catch (_: Exception) {
+              if (value.isNotBlank()) extractedTrackers.add(value)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  val combinedTrackers = (extractedTrackers + DEFAULT_TORRENT_TRACKERS).distinct()
+  val cleanUri = buildMagnetUri(hash, combinedTrackers, displayName)
+
+  return ParsedMagnet(
+    infoHash = hash,
+    cleanMagnetUri = cleanUri,
+    fileIdx = fileIdx,
+    displayName = displayName,
+    trackers = combinedTrackers,
+  )
+}
+
+fun buildMagnetUri(infoHash: String, trackers: List<String> = emptyList(), displayName: String? = null): String {
   val hash = canonicalInfoHash(infoHash) ?: infoHash.lowercase()
   val topic = if (hash.length == 40) "urn:btih:$hash" else "urn:btmh:1220$hash"
-  val combinedTrackers = (DEFAULT_TORRENT_TRACKERS + trackers).distinct()
+  val dnParam = if (!displayName.isNullOrBlank()) {
+    "&dn=${encodeUriComponent(displayName)}"
+  } else ""
+  val combinedTrackers = (trackers + DEFAULT_TORRENT_TRACKERS).distinct()
   val trackerParams = combinedTrackers.joinToString("") { "&tr=${encodeUriComponent(it)}" }
-  return "magnet:?xt=$topic$trackerParams"
+  return "magnet:?xt=$topic$dnParam$trackerParams"
 }
 
 private fun base32ToHex(base32: String): String {
